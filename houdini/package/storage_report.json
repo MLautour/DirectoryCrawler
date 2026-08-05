@@ -1,0 +1,7 @@
+{
+  "env": [
+    { "STORAGE_REPORT_ROOT": "$HOUDINI_PACKAGE_DIR/../.." },
+    { "PYTHONPATH": { "value": "$STORAGE_REPORT_ROOT" } }
+  ],
+  "path": "$STORAGE_REPORT_ROOT/houdini/package"
+}
