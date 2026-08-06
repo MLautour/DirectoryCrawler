@@ -20,6 +20,10 @@ DEFAULT_EXCLUDES: list[str] = ["*.tmp", "*.bak", "Thumbs.db", "__pycache__", ".g
 # an optional trailing suffix (a version tag, a descriptive slug, a time
 # stamp) is accepted but not parsed into the date. See plan §7.2.
 DEFAULT_ARCHIVE_DATE_PATTERNS: tuple[str, ...] = (
+    # 2026-08-07_10-30-00, 2026-08-07_10-30-00-noProcess. Must precede the
+    # generic YYYY-MM-DD entry below, which matches these names too but
+    # discards the time as an anonymous suffix.
+    r"^(?P<y>\d{4})-(?P<m>\d{2})-(?P<d>\d{2})_(?P<H>\d{2})-(?P<M>\d{2})-(?P<S>\d{2})(?:-noProcess)?$",
     r"^(?P<y>\d{4})-(?P<m>\d{2})-(?P<d>\d{2})(?:[_-].+)?$",   # 2024-01-15, 2024-01-15_v002
     r"^(?P<y>\d{4})_(?P<m>\d{2})_(?P<d>\d{2})(?:[_-].+)?$",   # 2024_01_15
     r"^(?P<y>\d{4})(?P<m>\d{2})(?P<d>\d{2})_\d{4}$",          # 20240115_1430
