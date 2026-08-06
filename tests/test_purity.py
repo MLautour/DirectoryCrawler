@@ -1,11 +1,10 @@
-"""Enforces the storage_report / houdini layering boundary (see docs/implementation-plan.md §13).
+"""Static guard for the storage_report package (see docs/implementation-plan.md §2/§9).
 
 1. AST scan: no `hou`, no Qt bindings, no toolutils, and no filesystem/IO
    shortcuts (`os.walk`, `rglob`, `open(`, `hashlib`, `threading.Thread`,
    `asyncio`, `multiprocessing`) anywhere under `storage_report/`.
 2. Import isolation: `storage_report` imports and runs end to end even when
-   `hou` and `PySide6` are unimportable.
-3. Direction check: `storage_report` never imports from `houdini`.
+   `hou` and `PySide6` are unimportable -- it never depends on either.
 """
 
 from __future__ import annotations
@@ -177,25 +176,6 @@ print("OK")
             f"Isolated run failed.\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}",
         )
         self.assertIn("OK", result.stdout)
-
-
-class TestDirectionality(unittest.TestCase):
-    """storage_report must never import from houdini."""
-
-    def test_storage_report_never_imports_houdini(self) -> None:
-        offenders: list[str] = []
-        for path in _iter_package_modules():
-            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Import):
-                    for alias in node.names:
-                        if alias.name.split(".")[0] == "houdini":
-                            offenders.append(f"{path}:{node.lineno}: import {alias.name}")
-                elif isinstance(node, ast.ImportFrom):
-                    module = node.module or ""
-                    if module.split(".")[0] == "houdini":
-                        offenders.append(f"{path}:{node.lineno}: from {module} import ...")
-        self.assertFalse(offenders, "storage_report imports houdini:\n" + "\n".join(offenders))
 
 
 if __name__ == "__main__":

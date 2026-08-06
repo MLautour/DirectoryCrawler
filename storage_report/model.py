@@ -83,7 +83,7 @@ class ScanStats:
     total_size: int
     skipped: list[SkippedPath] = field(default_factory=list)
     skipped_total: int = 0
-    cancelled: bool = False
+    stopped_early: bool = False
     # The structural level names this scan was configured with (Config.levels),
     # e.g. ("type", "asset", "variant"). html_report reads this instead of
     # importing Config, keeping the model/render layers Config-independent and
@@ -122,7 +122,7 @@ def aggregate(root: RootNode) -> RootNode:
 
         size = node.own_size
         file_count = node.file_count
-        dir_count = node.dir_count  # base: pre-seeded by the crawler for folded folders
+        dir_count = node.dir_count
         if node.children:
             for child in node.children:
                 size += child.size
@@ -155,3 +155,18 @@ def sort_tree(root: RootNode, key: Literal["size", "name"] = "size") -> RootNode
             )
         stack.extend(node.children)
     return root
+
+
+def levels_of(node: Node, levels: tuple[str, ...]) -> dict[str, str]:
+    """Walk `node`'s ancestor chain and collect `{level: name}` for each
+    configured structural level found along the way. Shared by `crawler`
+    (progress reporting) and `archive` (`ArchiveInfo.levels`) so both agree
+    on exactly one way to answer "which type/asset/variant is this node under".
+    """
+    values: dict[str, str] = {}
+    cur: Node | None = node
+    while cur is not None:
+        if cur.type in levels:
+            values.setdefault(cur.type, cur.name)
+        cur = cur.parent
+    return {level: values.get(level, "") for level in levels}

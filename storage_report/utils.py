@@ -8,7 +8,10 @@ import fnmatch
 import os
 import re
 import sys
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
+
+if TYPE_CHECKING:
+    from storage_report.crawler import Progress
 
 _SIZE_UNITS: tuple[str, ...] = ("B", "KB", "MB", "GB", "TB", "PB")
 
@@ -111,3 +114,38 @@ def is_junction(entry: "os.DirEntry[str]") -> bool:
     same as historical `os.path.isdir()` behaviour).
     """
     return getattr(entry, "is_junction", _false)()
+
+
+def format_elapsed_clock(seconds: float) -> str:
+    """Render an elapsed duration as zero-padded `HH:MM:SS`, for the console
+    progress reporter's `[00:04:28]` prefix. Unlike `format_duration`, hours
+    are always shown so the field width stays constant across a long scan.
+    """
+    total_seconds = int(seconds)
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+
+def format_progress_line(progress: "Progress") -> str:
+    """Render one console progress line (plan §6):
+
+        [00:04:28]  Characters / Dragon / High      files 4,253,221   dirs 18,244   locations 18,244/50,000
+    """
+    elapsed = format_elapsed_clock(progress.elapsed)
+    levels = " / ".join(v for v in progress.levels.values() if v)
+    prefix = f"[{elapsed}]  {levels}" if levels else f"[{elapsed}]"
+    if progress.max_locations is not None:
+        locations = f"{progress.locations:,}/{progress.max_locations:,}"
+    else:
+        locations = f"{progress.locations:,}"
+    return f"{prefix}      files {progress.files:,}   dirs {progress.directories:,}   locations {locations}"
+
+
+def console_progress_reporter(progress: "Progress") -> None:
+    """Default `progress_callback` used by `crawler.scan` when the caller
+    doesn't supply one. Prints one line per call -- deliberately not a
+    carriage-return redraw; see plan §6 for why (Houdini's Python Shell
+    appends output rather than honouring `\\r`).
+    """
+    print(format_progress_line(progress), flush=True)

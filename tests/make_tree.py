@@ -32,6 +32,30 @@ def build_brief_example(dest: Path) -> dict[str, int]:
     return expected
 
 
+def build_archive_example(dest: Path) -> None:
+    """A variant with a mixed-format ARCHIVE (dated folders in more than one
+    naming convention, one unparsed name, one containing RSTEXBIN), a variant
+    with an empty ARCHIVE, and a variant with no ARCHIVE at all -- exercises
+    every case `archive.analyze()` needs to handle.
+    """
+    high = dest / "Characters" / "Dragon" / "High" / "ARCHIVE"
+    (high / "2024-01-15" / "RSTEXBIN").mkdir(parents=True, exist_ok=True)
+    (high / "2024-01-15" / "RSTEXBIN" / "tex.bin").write_bytes(b"a" * 100)
+    (high / "2024-02-20").mkdir(parents=True, exist_ok=True)
+    (high / "2024-02-20" / "notes.txt").write_bytes(b"b" * 10)
+    (high / "2024_04_05").mkdir(parents=True, exist_ok=True)
+    (high / "2024_04_05" / "notes.txt").write_bytes(b"c" * 10)
+    (high / "misc_backup").mkdir(parents=True, exist_ok=True)
+    (high / "misc_backup" / "notes.txt").write_bytes(b"d" * 10)
+
+    low_archive = dest / "Characters" / "Dragon" / "Low" / "ARCHIVE"
+    low_archive.mkdir(parents=True, exist_ok=True)
+
+    default_variant = dest / "Props" / "Sword" / "Default"
+    default_variant.mkdir(parents=True, exist_ok=True)
+    (default_variant / "sword.abc").write_bytes(b"e" * 50)
+
+
 def build_perf_tree(
     dest: Path,
     *,

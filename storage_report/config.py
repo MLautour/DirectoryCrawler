@@ -8,12 +8,23 @@ this tuple at scan/render time.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Literal
 
 LEVELS: list[str] = ["type", "asset", "variant"]
 
 DEFAULT_EXCLUDES: list[str] = ["*.tmp", "*.bak", "Thumbs.db", "__pycache__", ".git"]
+
+# Tried in order, first match wins. Each pattern captures y/m/d named groups;
+# an optional trailing suffix (a version tag, a descriptive slug, a time
+# stamp) is accepted but not parsed into the date. See plan §7.2.
+DEFAULT_ARCHIVE_DATE_PATTERNS: tuple[str, ...] = (
+    r"^(?P<y>\d{4})-(?P<m>\d{2})-(?P<d>\d{2})(?:[_-].+)?$",   # 2024-01-15, 2024-01-15_v002
+    r"^(?P<y>\d{4})_(?P<m>\d{2})_(?P<d>\d{2})(?:[_-].+)?$",   # 2024_01_15
+    r"^(?P<y>\d{4})(?P<m>\d{2})(?P<d>\d{2})_\d{4}$",          # 20240115_1430
+    r"^(?P<y>\d{4})(?P<m>\d{2})(?P<d>\d{2})(?:[_-].+)?$",     # 20240115, 20240115-lighting
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,8 +39,14 @@ class Config:
     levels: tuple[str, ...] = tuple(LEVELS)
     excludes: tuple[str, ...] = tuple(DEFAULT_EXCLUDES)
     sort: Literal["size", "name"] = "size"
-    max_folder_depth: int | None = None
-    progress_interval: float = 0.5
+    max_locations: int | None = None
+    progress_interval: float = 2.0
+
+    # --- archive analysis (plan §7) ---
+    archive_dir: str = "ARCHIVE"
+    archive_marker: str = "RSTEXBIN"
+    archive_marker_recursive: bool = False
+    archive_date_patterns: tuple[str, ...] = DEFAULT_ARCHIVE_DATE_PATTERNS
 
     def __post_init__(self) -> None:
         if not self.levels:
@@ -38,7 +55,12 @@ class Config:
             raise ValueError(f"Config.levels must be unique, got {self.levels!r}")
         if self.sort not in ("size", "name"):
             raise ValueError(f"Config.sort must be 'size' or 'name', got {self.sort!r}")
-        if self.max_folder_depth is not None and self.max_folder_depth < 0:
-            raise ValueError("Config.max_folder_depth must be >= 0 or None")
+        if self.max_locations is not None and self.max_locations < 0:
+            raise ValueError("Config.max_locations must be >= 0 or None")
         if self.progress_interval < 0:
             raise ValueError("Config.progress_interval must be >= 0")
+        for pattern in self.archive_date_patterns:
+            try:
+                re.compile(pattern)
+            except re.error as exc:
+                raise ValueError(f"Config.archive_date_patterns: invalid regex {pattern!r}: {exc}") from exc

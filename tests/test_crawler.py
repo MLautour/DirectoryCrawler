@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+import io
 import os
 import sys
 import tempfile
@@ -82,7 +84,7 @@ class TestScanBriefExample(unittest.TestCase):
         total_expected = sum(self.expected.values())
         self.assertEqual(tree.size, total_expected)
         self.assertEqual(tree.stats.total_size, total_expected)
-        self.assertFalse(tree.stats.cancelled)
+        self.assertFalse(tree.stats.stopped_early)
         self.assertEqual(tree.stats.total_dirs, tree.dir_count)
         self.assertEqual(tree.stats.total_files, tree.file_count)
 
@@ -202,7 +204,7 @@ class TestCancellation(unittest.TestCase):
                 event.set()
 
             tree = scan(str(root), Config(progress_interval=0.0), progress_callback=progress_cb, cancel_event=event)
-            self.assertTrue(tree.stats.cancelled)
+            self.assertTrue(tree.stats.stopped_early)
             # aggregation must still be internally consistent on a partial tree
             self.assertGreaterEqual(tree.size, 0)
             self.assertEqual(tree.file_count, sum(
@@ -231,7 +233,7 @@ class TestErrorHandling(unittest.TestCase):
             self.assertEqual(tree.size, 3)
             self.assertEqual(tree.stats.skipped_total, 1)
             self.assertEqual(tree.stats.skipped[0].reason, "permission")
-            self.assertFalse(tree.stats.cancelled)
+            self.assertFalse(tree.stats.stopped_early)
 
     def test_file_vanishing_between_scandir_and_stat_is_recorded_not_raised(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -307,29 +309,41 @@ class TestProgressCallback(unittest.TestCase):
             self.assertGreater(tree.size, 0)  # scan still completed normally
 
 
-class TestMaxFolderDepth(unittest.TestCase):
-    def test_deep_folders_fold_into_nearest_retained_ancestor(self) -> None:
+class TestMaxLocations(unittest.TestCase):
+    def test_stops_after_exactly_n_directories(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            base = root / "Type" / "Asset" / "Variant"
-            deep = base / "d1" / "d2" / "d3"
-            deep.mkdir(parents=True)
-            (base / "d1" / "shallow.bin").write_bytes(b"a" * 10)
-            (deep / "deep.bin").write_bytes(b"b" * 20)
+            build_brief_example(root)
 
-            config = Config(max_folder_depth=1)
-            tree = scan(str(root), config)
+            tree = scan(str(root), Config(max_locations=2))
 
-            variant = tree.children[0].children[0].children[0]
-            self.assertEqual(variant.type, "variant")
-            self.assertEqual(variant.size, 30)
+            self.assertTrue(tree.stats.stopped_early)
+            # aggregation must still be internally consistent on a partial tree
+            self.assertGreaterEqual(tree.size, 0)
+            self.assertEqual(tree.file_count, sum(c.file_count for c in (tree.children or [])))
 
-            # exactly one folder node created (d1, at folder depth 1); d2/d3 folded in
-            folder_nodes = [c for c in variant.children if c.type == NodeType.FOLDER]
-            self.assertEqual(len(folder_nodes), 1)
-            self.assertEqual(folder_nodes[0].name, "d1")
-            self.assertEqual(folder_nodes[0].size, 30)
-            self.assertIsNone(folder_nodes[0].children)
+    def test_unbounded_by_default_and_not_stopped_early(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            build_brief_example(root)
+            tree = scan(str(root), Config())
+            self.assertFalse(tree.stats.stopped_early)
+
+
+class TestDefaultConsoleProgress(unittest.TestCase):
+    def test_omitting_progress_callback_still_prints(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            build_brief_example(root)
+
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                scan(str(root), Config(progress_interval=0.0))
+
+            output = buf.getvalue()
+            self.assertIn("locations", output)
+            self.assertIn("files", output)
+            self.assertIn("dirs", output)
 
 
 if __name__ == "__main__":

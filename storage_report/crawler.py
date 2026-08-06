@@ -1,5 +1,5 @@
 """scan() -- explicit-stack, single-threaded scandir DFS. See docs/implementation-plan.md
-§6 for the full design rationale (metadata-operation budget, cancellation granularity,
+§5 for the full design rationale (metadata-operation budget, cancellation granularity,
 why child lists are materialised instead of keeping scandir iterators live, etc).
 """
 
@@ -17,8 +17,14 @@ if TYPE_CHECKING:
     import threading
 
 from storage_report.config import Config
-from storage_report.model import Node, NodeType, RootNode, ScanStats, SkippedPath, aggregate, sort_tree
-from storage_report.utils import build_exclusion_matcher, display_path, is_junction, normalize_root_for_scan
+from storage_report.model import Node, NodeType, RootNode, ScanStats, SkippedPath, aggregate, levels_of, sort_tree
+from storage_report.utils import (
+    build_exclusion_matcher,
+    console_progress_reporter,
+    display_path,
+    is_junction,
+    normalize_root_for_scan,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -32,9 +38,9 @@ class Progress:
     current_folder: str
     files: int
     directories: int
+    locations: int
+    max_locations: int | None
     elapsed: float
-    completed_units: int
-    total_units: int
 
 
 def scan(
@@ -46,12 +52,12 @@ def scan(
     """Depth-first scan of `root`. Returns the aggregated, sorted tree with `.stats` attached.
 
     Never follows symlinks, never opens files, never stats a directory.
-    Returns a partial tree with `stats.cancelled = True` if `cancel_event` is set mid-scan.
+    Returns a partial tree with `stats.stopped_early = True` if `config.max_locations`
+    is reached or `cancel_event` fires mid-scan.
     """
     scan_root = normalize_root_for_scan(os.fspath(root))
     display_root = display_path(scan_root)
     is_excluded = build_exclusion_matcher(config.excludes)
-    unit_depth = min(2, len(config.levels))
 
     start_time = datetime.now()
     stats = ScanStats(
@@ -63,7 +69,7 @@ def scan(
         total_size=0,
         skipped=[],
         skipped_total=0,
-        cancelled=False,
+        stopped_early=False,
         levels=config.levels,
     )
     root_node = RootNode(name=display_root, type=NodeType.ROOT, depth=0, stats=stats)
@@ -71,13 +77,9 @@ def scan(
     logger.info("scan started: root=%s", display_root)
 
     state = _ScanState()
-    _callback = _CallbackGuard(progress_callback)
+    _callback = _CallbackGuard(progress_callback or console_progress_reporter)
 
-    # Stack frames, one of:
-    #   (node, path,   depth, "real")      -- scandir `path`; entries become `node`'s children
-    #   (node, path,   depth, "phantom")   -- past max_folder_depth: scandir but fold into `node`
-    #   (node, "",     0,     "unit_done") -- sentinel: `node`'s whole subtree finished (progress only)
-    stack: list[tuple[Node, str, int, str]] = [(root_node, scan_root, 0, "real")]
+    stack: list[tuple[Node, str, int]] = [(root_node, scan_root, 0)]
 
     started_monotonic = time.monotonic()
     last_progress_monotonic = started_monotonic
@@ -86,18 +88,17 @@ def scan(
     gc.disable()
     try:
         while stack:
+            if config.max_locations is not None and state.locations >= config.max_locations:
+                stats.stopped_early = True
+                logger.info("scan stopped early: root=%s reason=max_locations", display_root)
+                break
             if cancel_event is not None and cancel_event.is_set():
-                stats.cancelled = True
-                logger.info("scan cancelled: root=%s", display_root)
+                stats.stopped_early = True
+                logger.info("scan stopped early: root=%s reason=cancelled", display_root)
                 break
 
-            node, path, depth, mode = stack.pop()
-
-            if mode == "unit_done":
-                state.completed_units += 1
-                continue
-
-            real = mode == "real"
+            node, path, depth = stack.pop()
+            state.locations += 1
             child_dirs: list[tuple[Node, str]] = []
 
             try:
@@ -107,11 +108,8 @@ def scan(
                             continue
                         if entry.is_dir(follow_symlinks=False) and not is_junction(entry):
                             state.running_dirs += 1
-                            if real:
-                                _handle_real_subdir(entry, node, depth, config, child_dirs, stack)
-                            else:
-                                node.dir_count += 1
-                                stack.append((node, entry.path, depth + 1, "phantom"))
+                            child = Node(name=entry.name, type=_type_for(depth + 1, config), parent=node, depth=depth + 1)
+                            child_dirs.append((child, entry.path))
                         elif entry.is_file(follow_symlinks=False):
                             try:
                                 size = entry.stat(follow_symlinks=False).st_size
@@ -131,22 +129,21 @@ def scan(
             except OSError as exc:
                 _record_skip(stats, path, "os-error", str(exc))
             else:
-                if real:
-                    node.children = [child for child, _ in child_dirs] or None
-                    _push_children(child_dirs, unit_depth, state, stack)
+                node.children = [child for child, _ in child_dirs] or None
+                stack.extend((child, child_path, depth + 1) for child, child_path in reversed(child_dirs))
 
             now = time.monotonic()
             if _callback and now - last_progress_monotonic >= config.progress_interval:
                 last_progress_monotonic = now
                 _callback(
                     Progress(
-                        levels=_levels_snapshot(node, config),
+                        levels=levels_of(node, config.levels),
                         current_folder=display_path(path),
                         files=state.running_files,
                         directories=state.running_dirs,
+                        locations=state.locations,
+                        max_locations=config.max_locations,
                         elapsed=now - started_monotonic,
-                        completed_units=state.completed_units,
-                        total_units=state.total_units,
                     )
                 )
     finally:
@@ -165,23 +162,23 @@ def scan(
     if _callback:
         _callback(
             Progress(
-                levels=_levels_snapshot(root_node, config),
+                levels=levels_of(root_node, config.levels),
                 current_folder=display_root,
                 files=state.running_files,
                 directories=state.running_dirs,
+                locations=state.locations,
+                max_locations=config.max_locations,
                 elapsed=time.monotonic() - started_monotonic,
-                completed_units=state.completed_units,
-                total_units=state.total_units,
             )
         )
 
     logger.info(
-        "scan finished: root=%s files=%d dirs=%d size=%d cancelled=%s skipped=%d",
+        "scan finished: root=%s files=%d dirs=%d size=%d stopped_early=%s skipped=%d",
         display_root,
         stats.total_files,
         stats.total_dirs,
         stats.total_size,
-        stats.cancelled,
+        stats.stopped_early,
         stats.skipped_total,
     )
     return root_node
@@ -192,8 +189,7 @@ class _ScanState:
     running_files: int = 0
     running_dirs: int = 0
     running_size: int = 0
-    total_units: int = 0
-    completed_units: int = 0
+    locations: int = 0
 
 
 class _CallbackGuard:
@@ -230,52 +226,6 @@ def _type_for(depth: int, config: Config) -> str:
     return NodeType.FOLDER
 
 
-def _handle_real_subdir(
-    entry: "os.DirEntry[str]",
-    node: Node,
-    depth: int,
-    config: Config,
-    child_dirs: list[tuple[Node, str]],
-    stack: list[tuple[Node, str, int, str]],
-) -> None:
-    child_type = _type_for(depth + 1, config)
-    if child_type == NodeType.FOLDER and config.max_folder_depth is not None:
-        folder_depth = depth + 1 - len(config.levels)
-        if folder_depth > config.max_folder_depth:
-            # Cap reached: fold this subdirectory's contents into `node` instead of
-            # creating a Node for it. `node` still receives credit for the directory.
-            node.dir_count += 1
-            stack.append((node, entry.path, depth + 1, "phantom"))
-            return
-    child = Node(name=entry.name, type=child_type, parent=node, depth=depth + 1)
-    child_dirs.append((child, entry.path))
-
-
-def _push_children(
-    child_dirs: list[tuple[Node, str]],
-    unit_depth: int,
-    state: _ScanState,
-    stack: list[tuple[Node, str, int, str]],
-) -> None:
-    to_push: list[tuple[Node, str, int, str]] = []
-    for child, child_path in reversed(child_dirs):
-        if child.depth == unit_depth:
-            state.total_units += 1
-            to_push.append((child, "", 0, "unit_done"))
-        to_push.append((child, child_path, child.depth, "real"))
-    stack.extend(to_push)
-
-
-def _levels_snapshot(node: Node, config: Config) -> dict[str, str]:
-    values: dict[str, str] = {}
-    cur: Node | None = node
-    while cur is not None:
-        if cur.type in config.levels:
-            values.setdefault(cur.type, cur.name)
-        cur = cur.parent
-    return {level: values.get(level, "") for level in config.levels}
-
-
 def _record_skip(stats: ScanStats, path: str, reason: str, detail: str = "") -> None:
     stats.skipped_total += 1
     if len(stats.skipped) < _MAX_SKIPPED:
@@ -287,10 +237,6 @@ def _materialize_root_files(root: RootNode) -> None:
     """Insert a synthetic `root_files` child wherever a directory has direct files,
     at any structural level (root/type/asset/variant) that has them. `folder`
     nodes never get one -- their direct files stay folded into their own size.
-
-    Must run after the whole tree is built (not per-directory during the DFS):
-    with `max_folder_depth` capping, a node's own_size/file_count keep growing
-    from folded-in descendants until its entire subtree has been walked.
     """
     stack: list[Node] = [root]
     while stack:

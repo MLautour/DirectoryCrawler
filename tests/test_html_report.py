@@ -7,11 +7,12 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 
+from storage_report.archive import ArchiveInfo, DatedArchive
 from storage_report.config import Config
 from storage_report import crawler, html_report
 from storage_report.model import Node, NodeType, RootNode, ScanStats, SkippedPath, aggregate, sort_tree
 
-from tests.make_tree import build_brief_example
+from tests.make_tree import build_archive_example, build_brief_example
 
 
 def _extract_const(html: str, name: str) -> object:
@@ -127,7 +128,7 @@ class TestHtmlReportSafeEmbedding(unittest.TestCase):
             self.assertIn(name, text)  # stored raw (unescaped), per §10.2
 
 
-class TestHtmlReportSkippedAndCancelled(unittest.TestCase):
+class TestHtmlReportSkippedAndStoppedEarly(unittest.TestCase):
     def test_skipped_section_present_when_skips_exist(self) -> None:
         stats = ScanStats(
             root="root", start_time=datetime(2024, 1, 1), end_time=datetime(2024, 1, 1),
@@ -144,10 +145,10 @@ class TestHtmlReportSkippedAndCancelled(unittest.TestCase):
             self.assertIn('class="skipped"', text)
             self.assertIn("permission", text)
 
-    def test_incomplete_banner_present_when_cancelled(self) -> None:
+    def test_incomplete_banner_present_when_stopped_early(self) -> None:
         stats = ScanStats(
             root="root", start_time=datetime(2024, 1, 1), end_time=datetime(2024, 1, 1),
-            total_files=0, total_dirs=0, total_size=0, cancelled=True, levels=("type",),
+            total_files=0, total_dirs=0, total_size=0, stopped_early=True, levels=("type",),
         )
         root = RootNode(name="root", type=NodeType.ROOT, depth=0, stats=stats)
         aggregate(root)
@@ -172,6 +173,66 @@ class TestHtmlReportAtomicWrite(unittest.TestCase):
             leftovers = [p for p in Path(tmp).iterdir() if p.name != "report.html"]
             self.assertEqual(leftovers, [])
 
+
+class TestArchivesSection(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        build_archive_example(self.root)
+        self.tree = crawler.scan(str(self.root), Config())
+        self.out = Path(self._tmp.name) / "report.html"
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_no_archives_section_when_no_archive_folders(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            build_brief_example(root)
+            tree = crawler.scan(str(root), Config())
+            out = Path(tmp) / "report.html"
+            html_report.write(tree, out)
+            text = out.read_text(encoding="utf-8")
+            self.assertNotIn('id="archives-section"', text)
+
+    def test_archives_section_present_with_rollup_and_positions(self) -> None:
+        html_report.write(self.tree, self.out)
+        text = self.out.read_text(encoding="utf-8")
+        self.assertIn('id="archives-section"', text)
+        # 2 variants have an ARCHIVE folder (High: 4 dated, Low: empty)
+        self.assertIn("2 variants with an ARCHIVE", text)
+        self.assertIn("4 dated archives", text)
+        self.assertIn("1 variants contain RSTEXBIN", text)
+        self.assertIn("1 do not", text)
+        # High's first (and only) RSTEXBIN is the earliest dated folder, 1st of 4
+        self.assertIn("2024-01-15 (1 of 4)", text)
+
+    def test_archives_section_partial_suffix_when_stopped_early(self) -> None:
+        stats = ScanStats(
+            root="root", start_time=datetime(2024, 1, 1), end_time=datetime(2024, 1, 1),
+            total_files=0, total_dirs=0, total_size=0, stopped_early=True, levels=("type", "asset", "variant"),
+        )
+        root = RootNode(name="root", type=NodeType.ROOT, depth=0, stats=stats)
+        aggregate(root)
+        archives = [
+            ArchiveInfo(
+                levels={"type": "Characters", "asset": "Dragon", "variant": "High"},
+                variant_path="root/Characters/Dragon/High",
+                archive_size=100,
+                archive_count=1,
+                dated=(DatedArchive(name="2024-01-15", date=None, size=100, has_marker=False),),
+                unparsed=(),
+                first_rstexbin=None,
+                first_rstexbin_date=None,
+                first_rstexbin_index=None,
+                rstexbin_count=0,
+            )
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "report.html"
+            html_report.write(root, out, archives=archives)
+            text = out.read_text(encoding="utf-8")
+            self.assertIn("Archives (partial", text)
 
 if __name__ == "__main__":
     unittest.main()
