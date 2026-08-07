@@ -157,6 +157,17 @@ def _asset_badges(archives: list[ArchiveInfo], levels: tuple[str, ...]) -> dict[
                 f"across {s.variant_count} {variant_label}(s)"
             )
             badges[asset_path] = [text, tooltip, 1]
+        elif s.first_rstexbin_undated is not None:
+            # The marker exists but sits in an archive whose name did not parse
+            # as a date. Saying "NO RSTEXBIN" here would be false; saying
+            # "FIRST" would be unfounded, since nothing orders it.
+            text = f"RSTEXBIN IN {s.first_rstexbin_undated} (UNDATED)"
+            tooltip = (
+                f"{s.rstexbin_count} archive(s) contain RSTEXBIN, but none of their folder "
+                f"names parsed as a date, so no first can be determined. Add a matching "
+                f"pattern to Config.archive_date_patterns to order them."
+            )
+            badges[asset_path] = [text, tooltip, 1]
         else:
             text = "NO RSTEXBIN"
             tooltip = (
@@ -345,8 +356,13 @@ def _render_skipped_section(skipped: list, skipped_total: int) -> str:
 def _archives_payload(archives: list[ArchiveInfo], levels: tuple[str, ...]) -> list[dict]:
     payload = []
     for info in archives:
-        if info.first_rstexbin_date is not None:
-            first_label = f"{info.first_rstexbin_date.isoformat()} ({info.first_rstexbin_index} of {info.archive_count})"
+        if info.first_rstexbin is not None:
+            # The folder name, not the parsed date: two archives on the same day
+            # differ only by their time component, which the date alone drops.
+            first_label = f"{info.first_rstexbin} ({info.first_rstexbin_index} of {info.archive_count})"
+        elif info.rstexbin_count:
+            undated = next((d.name for d in info.dated if d.date is None and d.has_marker), None)
+            first_label = f"{undated} (undated)" if undated else "none"
         else:
             first_label = "none"
         payload.append(

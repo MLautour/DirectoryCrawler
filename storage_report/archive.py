@@ -58,6 +58,11 @@ class AssetArchiveSummary:
     first_rstexbin_date: date | None
     first_rstexbin_variant: str | None
     rstexbin_count: int
+    # An archive that contains the marker but whose folder name did not parse
+    # as a date. It cannot be "first" -- there is nothing to order it by -- but
+    # reporting it as "no RSTEXBIN" would be a lie, so it is surfaced
+    # separately. Alphabetically first when there are several.
+    first_rstexbin_undated: str | None = None
 
 
 def analyze(tree: RootNode, config: Config = Config()) -> list[ArchiveInfo]:
@@ -117,6 +122,12 @@ def summarize_by_asset(
             if i.first_rstexbin_date is not None
         ]
         first = min(candidates) if candidates else None
+        # Marker-bearing archives whose name did not parse as a date: real
+        # RSTEXBIN folders that simply cannot be ordered.
+        undated_marked = sorted(
+            (d.name for i in infos for d in i.dated if d.date is None and d.has_marker),
+            key=str.lower,
+        )
         summaries[asset_path] = AssetArchiveSummary(
             asset_path=asset_path,
             asset_name=infos[0].levels.get(asset_level, ""),
@@ -126,6 +137,7 @@ def summarize_by_asset(
             first_rstexbin_date=first[0] if first else None,
             first_rstexbin_variant=first[1] if first else None,
             rstexbin_count=sum(i.rstexbin_count for i in infos),
+            first_rstexbin_undated=undated_marked[0] if undated_marked else None,
         )
     return summaries
 

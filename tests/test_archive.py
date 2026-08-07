@@ -133,6 +133,34 @@ class TestSummarizeByAsset(unittest.TestCase):
     def test_hierarchy_without_an_asset_level_yields_no_summaries(self) -> None:
         self.assertEqual(archive.summarize_by_asset(self.archives, ("variant",)), {})
 
+    def test_marker_in_an_undated_archive_is_not_reported_as_absent(self) -> None:
+        """A folder name that does not parse as a date cannot be "first", but the
+        RSTEXBIN inside it is still real -- reporting "none" would be a lie.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            v = root / "Characters" / "Dragon" / "High" / "ARCHIVE"
+            (v / "backup_final_v2" / "RSTEXBIN").mkdir(parents=True)
+            summaries = archive.summarize_by_asset(
+                archive.analyze(scan(str(root), Config()), Config()), self.LEVELS
+            )
+            s = next(iter(summaries.values()))
+            self.assertIsNone(s.first_rstexbin, "undated archive cannot be ordered")
+            self.assertEqual(s.first_rstexbin_undated, "backup_final_v2")
+            self.assertEqual(s.rstexbin_count, 1)
+
+    def test_no_marker_anywhere_leaves_undated_field_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            v = root / "Characters" / "Dragon" / "High" / "ARCHIVE"
+            (v / "backup_final_v2").mkdir(parents=True)
+            summaries = archive.summarize_by_asset(
+                archive.analyze(scan(str(root), Config()), Config()), self.LEVELS
+            )
+            s = next(iter(summaries.values()))
+            self.assertIsNone(s.first_rstexbin)
+            self.assertIsNone(s.first_rstexbin_undated)
+
 
 class TestAnalyzeNoArchives(unittest.TestCase):
     def test_no_variants_have_archive_returns_empty_list(self) -> None:
