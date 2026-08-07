@@ -84,6 +84,9 @@ class ScanStats:
     skipped: list[SkippedPath] = field(default_factory=list)
     skipped_total: int = 0
     stopped_early: bool = False
+    # Wall-clock seconds spent deliberately paused by the throttle, so a report
+    # reader can tell a slow filer apart from a politely-paced scan.
+    throttled_seconds: float = 0.0
     # The structural level names this scan was configured with (Config.levels),
     # e.g. ("type", "asset", "variant"). html_report reads this instead of
     # importing Config, keeping the model/render layers Config-independent and

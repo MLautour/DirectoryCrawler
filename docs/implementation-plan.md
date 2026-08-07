@@ -262,6 +262,32 @@ Glob patterns matched against the **entry name**, compiled once into a single al
 calls would dominate the loop. Case-insensitive on Windows. Excluded directories are not descended
 into and excluded files are skipped before their `stat()`, so exclusions actively reduce NAS load.
 
+### 5.6 Throttling
+
+Everything in §5.3 minimises work *per directory*. It says nothing about the *rate*: the loop
+issues enumerations back-to-back as fast as the filer answers, so a multi-million-file crawl is a
+sustained stream of metadata requests. Single-threading is the main protection — one outstanding
+request at a time, so it can never fan out and swamp the metadata server — but there is no pacing.
+
+`Config.throttle_ms` (fixed floor) and `Config.throttle_ratio` (proportional to how long the
+directory actually took) pause **between directories**. That granularity is the point: on Windows
+the directory enumeration also carries every entry's size, so one `scandir` *is* one network round
+trip, and pausing per directory is pausing per network operation. Pausing per *file* would be
+theatre — those stats cost nothing on this platform.
+
+The ratio term is self-scaling: negligible on a fast local disk, but it backs off hard exactly when
+the filer is slow, which is when it is busy. Combined, they give a duty cycle of about
+`1 / (1 + ratio)` and never exceed `1000 / throttle_ms` directories per second.
+
+Two details that matter more than they look:
+
+- **The pause waits on `cancel_event` rather than calling `time.sleep`** when one is supplied.
+  `Event.wait(timeout)` returns the instant the flag is set, so throttling costs nothing in
+  cancellation latency. A blind sleep would make Cancel feel broken — at 250 ms per directory,
+  every stop request would sit in dead time.
+- **`ScanStats.throttled_seconds`** records the total, surfaced in the report summary as
+  "Paused by Throttle", so a reader can tell a slow filer from a politely-paced scan.
+
 ---
 
 ## 6. Progress

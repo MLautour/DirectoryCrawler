@@ -99,6 +99,10 @@ config = Config(
     max_locations=None,         # stop after N directories visited; None = unlimited
     progress_interval=2.0,      # seconds between progress_callback invocations
 
+    # network politeness (see below)
+    throttle_ms=0.0,            # fixed pause after every directory, milliseconds
+    throttle_ratio=0.0,         # extra pause = this * how long that directory took
+
     # archive analysis (see below)
     archive_dir="ARCHIVE",              # matched case-insensitively
     archive_marker="RSTEXBIN",          # ditto
@@ -110,6 +114,46 @@ config = Config(
 Everything in the report — node types, colours, the toolbar's per-level expand/collapse
 buttons, and the "Largest X" summary rows — is derived from `levels`, so reconfiguring it
 reconfigures the whole tool with no other change.
+
+### Throttling (keeping load off a shared filer)
+
+By default the crawler runs flat out: each directory costs the bare minimum (one `scandir`,
+zero directory `stat`s, one `stat` per file — and on Windows that `stat` is free because the
+directory enumeration already carries the size), but they are issued back-to-back with no gaps.
+On a busy production share that is still a sustained stream of metadata requests.
+
+`throttle_ms` and `throttle_ratio` pause **between directories**, which on Windows means pausing
+between network round trips — the finest granularity that means anything, since one `scandir` is
+one network operation:
+
+```python
+crawler.scan(root, Config(throttle_ms=100, throttle_ratio=4.0))
+```
+
+- **`throttle_ms`** is a fixed floor: a hard cap of `1000 / throttle_ms` directories per second,
+  regardless of how fast the filer is.
+- **`throttle_ratio`** adds a pause proportional to how long that directory actually took, giving
+  a duty cycle of roughly `1 / (1 + ratio)`. It is self-scaling: near-zero on a fast local disk,
+  but it backs off hard exactly when the filer is slow — which is when it is busy.
+
+Use both together for a floor plus adaptive backoff. Rough cost for a 50,000-directory repository:
+
+| Setting | Max rate | Added time |
+|---|---|---|
+| `throttle_ms=20` | 50 dirs/sec | ~17 min |
+| `throttle_ms=50` | 20 dirs/sec | ~42 min |
+| `throttle_ms=100, throttle_ratio=4.0` | 10 dirs/sec | ~2–3 hours |
+| `throttle_ms=250, throttle_ratio=4.0` | 4 dirs/sec | ~3.5–5 hours |
+
+The report's summary gains a **Paused by Throttle** row showing total pause time and what share of
+the run it was, so a slow filer is distinguishable from a politely-paced scan.
+
+Cancellation stays responsive: when a `cancel_event` is supplied the crawler waits on the event
+rather than sleeping blindly, so it wakes the instant you cancel even mid-pause.
+
+> Run throttled scans from `hython` or a terminal, not the Houdini GUI. The scan is synchronous,
+> so Houdini is unresponsive for its full duration — and throttling deliberately makes that
+> duration much longer.
 
 ### Archive analysis
 

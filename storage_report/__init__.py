@@ -63,6 +63,8 @@ def run(
     config: Config | None = None,
     *,
     max_locations: int | None = None,
+    throttle_ms: float = 0.0,
+    throttle_ratio: float = 0.0,
     progress_callback: Callable[[Progress], None] | None = None,
     cancel_event: "threading.Event | None" = None,
     title: str | None = None,
@@ -70,12 +72,16 @@ def run(
     """Scan `root`, analyze archives, and write the HTML report to `output` in
     one call. Returns the scanned (aggregated) tree.
 
-    `config` takes precedence when given; `max_locations` is a shortcut for
-    the common case of just wanting a safety valve without building a full
-    `Config`.
+    `config` takes precedence when given; `max_locations`, `throttle_ms` and
+    `throttle_ratio` are shortcuts for the common cases of wanting a safety
+    valve or a gentle pace without building a full `Config`.
     """
     if config is None:
-        config = Config(max_locations=max_locations)
+        config = Config(
+            max_locations=max_locations,
+            throttle_ms=throttle_ms,
+            throttle_ratio=throttle_ratio,
+        )
     tree = crawler.scan(root, config, progress_callback=progress_callback, cancel_event=cancel_event)
     archives = archive.analyze(tree, config)
     html_report.write(tree, output, archives=archives, title=title)

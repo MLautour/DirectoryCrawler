@@ -54,6 +54,9 @@ def scan(
     Never follows symlinks, never opens files, never stats a directory.
     Returns a partial tree with `stats.stopped_early = True` if `config.max_locations`
     is reached or `cancel_event` fires mid-scan.
+
+    `config.throttle_ms` / `config.throttle_ratio` pause between directories to
+    keep sustained load off a shared filer; see `Config` for the trade-off.
     """
     scan_root = normalize_root_for_scan(os.fspath(root))
     display_root = display_path(scan_root)
@@ -84,6 +87,17 @@ def scan(
     started_monotonic = time.monotonic()
     last_progress_monotonic = started_monotonic
 
+    throttle_floor = config.throttle_ms / 1000.0
+    throttle_ratio = config.throttle_ratio
+    throttling = throttle_floor > 0.0 or throttle_ratio > 0.0
+    if throttling:
+        logger.info(
+            "throttling enabled: root=%s floor=%.0fms ratio=%.2f",
+            display_root,
+            config.throttle_ms,
+            throttle_ratio,
+        )
+
     gc_was_enabled = gc.isenabled()
     gc.disable()
     try:
@@ -99,6 +113,7 @@ def scan(
 
             node, path, depth = stack.pop()
             state.locations += 1
+            directory_started = time.monotonic() if throttling else 0.0
             child_dirs: list[tuple[Node, str]] = []
 
             try:
@@ -146,6 +161,15 @@ def scan(
                         elapsed=now - started_monotonic,
                     )
                 )
+
+            # Yield the filer between directories. Placed after progress so the
+            # console still updates promptly, and last in the body so the pause
+            # sits between two network operations rather than mid-directory.
+            if throttling:
+                pause = throttle_floor + (now - directory_started) * throttle_ratio
+                if pause > 0.0:
+                    state.throttled_seconds += pause
+                    _pause(pause, cancel_event)
     finally:
         if gc_was_enabled:
             gc.enable()
@@ -154,6 +178,7 @@ def scan(
     stats.total_files = state.running_files
     stats.total_dirs = state.running_dirs
     stats.total_size = state.running_size
+    stats.throttled_seconds = state.throttled_seconds
 
     _materialize_root_files(root_node)
     aggregate(root_node)
@@ -190,6 +215,21 @@ class _ScanState:
     running_dirs: int = 0
     running_size: int = 0
     locations: int = 0
+    throttled_seconds: float = 0.0
+
+
+def _pause(seconds: float, cancel_event: "threading.Event | None") -> None:
+    """Sleep between directories, but wake instantly if the scan is cancelled.
+
+    `Event.wait(timeout)` returns as soon as the flag is set, so throttling
+    costs nothing in cancellation latency. A plain `time.sleep` here would make
+    Cancel feel broken: at a 250 ms pause per directory the worst case is a
+    quarter-second of dead time on every single stop request.
+    """
+    if cancel_event is not None:
+        cancel_event.wait(seconds)
+    else:
+        time.sleep(seconds)
 
 
 class _CallbackGuard:

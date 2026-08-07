@@ -46,6 +46,21 @@ class Config:
     max_locations: int | None = None
     progress_interval: float = 2.0
 
+    # --- network politeness (plan §5.6) ---
+    # Pause after every directory. On Windows the directory enumeration also
+    # carries each entry's size, so one scandir *is* one network round trip --
+    # pausing per directory is therefore pausing per network operation, the
+    # finest granularity that means anything.
+    #
+    # `throttle_ms` is a fixed floor. `throttle_ratio` adds a pause
+    # proportional to how long that directory actually took, which makes the
+    # crawler back off harder exactly when the filer is slow (i.e. when it is
+    # busy). Combining them gives a duty cycle of roughly
+    # 1 / (1 + throttle_ratio), never faster than one directory per
+    # `throttle_ms`. Both default to 0.0 -- no pause, original behaviour.
+    throttle_ms: float = 0.0
+    throttle_ratio: float = 0.0
+
     # --- archive analysis (plan §7) ---
     archive_dir: str = "ARCHIVE"
     archive_marker: str = "RSTEXBIN"
@@ -63,6 +78,10 @@ class Config:
             raise ValueError("Config.max_locations must be >= 0 or None")
         if self.progress_interval < 0:
             raise ValueError("Config.progress_interval must be >= 0")
+        if self.throttle_ms < 0:
+            raise ValueError("Config.throttle_ms must be >= 0")
+        if self.throttle_ratio < 0:
+            raise ValueError("Config.throttle_ratio must be >= 0")
         for pattern in self.archive_date_patterns:
             try:
                 re.compile(pattern)

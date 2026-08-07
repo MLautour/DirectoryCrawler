@@ -234,6 +234,12 @@ def _render_page(
         ("Total Directories", f"{stats.total_dirs:,}" if stats else "0"),
         ("Total Storage", format_size(stats.total_size) if stats else format_size(tree.size)),
     ]
+    if stats and stats.throttled_seconds > 0:
+        # Only shown when throttling was on, so an unthrottled report stays uncluttered.
+        share = stats.throttled_seconds / max(stats.duration.total_seconds(), 1e-9) * 100
+        summary_rows.append(
+            ("Paused by Throttle", f"{format_duration(stats.throttled_seconds)} ({share:.0f}% of run)")
+        )
     for i, level in enumerate(levels):
         entry = largest.get(level)
         if entry is None:

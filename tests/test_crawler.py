@@ -6,6 +6,7 @@ import os
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -328,6 +329,71 @@ class TestMaxLocations(unittest.TestCase):
             build_brief_example(root)
             tree = scan(str(root), Config())
             self.assertFalse(tree.stats.stopped_early)
+
+
+class TestThrottle(unittest.TestCase):
+    """Pausing between directories to keep sustained load off a shared filer."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        build_brief_example(self.root)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_no_pause_by_default(self) -> None:
+        with mock.patch("storage_report.crawler.time.sleep") as slept:
+            tree = scan(str(self.root), Config())
+        slept.assert_not_called()
+        self.assertEqual(tree.stats.throttled_seconds, 0.0)
+
+    def test_pauses_once_per_directory(self) -> None:
+        with mock.patch("storage_report.crawler.time.sleep") as slept:
+            tree = scan(str(self.root), Config(throttle_ms=50))
+        # One pause per directory visited, i.e. per network round trip.
+        self.assertEqual(slept.call_count, tree.stats.total_dirs + 1)  # +1 for the root
+        for call in slept.call_args_list:
+            self.assertAlmostEqual(call.args[0], 0.05, places=6)
+
+    def test_reports_total_time_paused(self) -> None:
+        with mock.patch("storage_report.crawler.time.sleep"):
+            tree = scan(str(self.root), Config(throttle_ms=50))
+        expected = 0.05 * (tree.stats.total_dirs + 1)
+        self.assertAlmostEqual(tree.stats.throttled_seconds, expected, places=6)
+
+    def test_ratio_scales_pause_with_measured_directory_time(self) -> None:
+        with mock.patch("storage_report.crawler.time.sleep") as slept:
+            scan(str(self.root), Config(throttle_ratio=2.0))
+        self.assertGreater(slept.call_count, 0)
+        # Ratio-only: every pause is proportional to real elapsed time, so it is
+        # positive but never the fixed floor (which is 0 here).
+        for call in slept.call_args_list:
+            self.assertGreater(call.args[0], 0.0)
+
+    def test_cancel_event_makes_the_pause_interruptible(self) -> None:
+        """Throttling must not add to cancellation latency: with a cancel_event
+        the crawler waits on the event rather than sleeping blindly.
+        """
+        event = threading.Event()
+        with mock.patch("storage_report.crawler.time.sleep") as slept:
+            scan(str(self.root), Config(throttle_ms=50), cancel_event=event)
+        slept.assert_not_called()  # Event.wait was used instead
+
+    def test_cancel_during_a_pause_returns_immediately(self) -> None:
+        event = threading.Event()
+        event.set()  # already cancelled
+        started = time.monotonic()
+        tree = scan(str(self.root), Config(throttle_ms=5000), cancel_event=event)
+        # A blind sleep would have cost 5s before the first stop check.
+        self.assertLess(time.monotonic() - started, 1.0)
+        self.assertTrue(tree.stats.stopped_early)
+
+    def test_negative_values_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            Config(throttle_ms=-1)
+        with self.assertRaises(ValueError):
+            Config(throttle_ratio=-0.5)
 
 
 class TestDefaultConsoleProgress(unittest.TestCase):
