@@ -375,10 +375,20 @@ lives in one 120-line module that can be edited without touching traversal code.
 
 ### 7.3 Reporting
 
-Two outputs, because you asked to *capture* the information, not only to look at it:
+Three outputs, because you asked to *capture* the information, not only to look at it:
 
 - **Programmatic** — `analyze()` returns the list above; iterate it in the shell, write it to CSV or
-  JSON, feed it to a pipeline tool.
+  JSON, feed it to a pipeline tool. `summarize_by_asset(archives, levels)` rolls those per-variant
+  records up to one `AssetArchiveSummary` per asset.
+- **On the asset row in the tree** — the first-RSTEXBIN answer is promoted to the asset row as a
+  bracketed badge, `Dragon (FIRST RSTEXBIN FROM 2026-08-07_10-30-00)`, so it is readable without
+  expanding down to a variant's ARCHIVE folder. An asset with several variants shows the **earliest**
+  first-RSTEXBIN across all of them, ties broken on variant then archive name; the badge's tooltip
+  names which variant it came from. Assets whose archives contain no marker at all show
+  `(NO RSTEXBIN)` in a different colour — distinct from *no badge*, which means the asset has no
+  ARCHIVE folder anywhere beneath it. Badges ride in a **sparse** `BADGES = {nodeIndex: […]}` map
+  rather than a sixth field on every node: only asset rows carry one, and an empty slot per node
+  would add megabytes to the payload on a large repository.
 - **In the HTML report** — a dedicated **Archives** section: one row per variant with Type, Asset,
   Variant, archive count, first RSTEXBIN archive (with its position, e.g. `2024-03-02 (3 of 11)`),
   RSTEXBIN count, and archive size. Sortable by any column, with a filter for "variants with no

@@ -8,6 +8,7 @@ that can change without touching traversal code.
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
 
@@ -35,6 +36,28 @@ class ArchiveInfo:
     first_rstexbin_date: date | None
     first_rstexbin_index: int | None
     rstexbin_count: int
+    # Path of the asset containing this variant, taken from the actual ancestor
+    # node rather than string-manipulating `variant_path`, so it matches
+    # `Node.path` exactly and can be used as a lookup key by the renderer.
+    # Empty when the configured hierarchy has no level above the variant.
+    asset_path: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class AssetArchiveSummary:
+    """Every variant ARCHIVE beneath one asset, rolled up for display on the
+    asset row. `first_rstexbin` is the earliest dated archive containing the
+    marker across *all* of the asset's variants.
+    """
+
+    asset_path: str
+    asset_name: str
+    variant_count: int          # variants under this asset that have an ARCHIVE
+    archive_count: int          # dated archives across those variants
+    first_rstexbin: str | None
+    first_rstexbin_date: date | None
+    first_rstexbin_variant: str | None
+    rstexbin_count: int
 
 
 def analyze(tree: RootNode, config: Config = Config()) -> list[ArchiveInfo]:
@@ -59,6 +82,65 @@ def analyze(tree: RootNode, config: Config = Config()) -> list[ArchiveInfo]:
 
     results.sort(key=lambda info: info.variant_path)
     return results
+
+
+def summarize_by_asset(
+    archives: Sequence[ArchiveInfo], levels: tuple[str, ...]
+) -> dict[str, AssetArchiveSummary]:
+    """Roll variant-level `ArchiveInfo` up to the asset containing them.
+
+    Keyed by asset path so a renderer can look up an asset node's summary by
+    `Node.path` without walking the tree a second time. Takes `levels` rather
+    than a `Config` so the render layer can stay Config-independent (it reads
+    `ScanStats.levels`), matching how the rest of the report is built.
+
+    An asset with several variants reports the earliest first-RSTEXBIN across
+    all of them; ties break on variant name then archive name, so the result is
+    deterministic regardless of scan or sort order.
+    """
+    if len(levels) < 2:
+        return {}  # no level above the variant, so nothing to attach a summary to
+    asset_level, variant_level = levels[-2], levels[-1]
+
+    grouped: dict[str, list[ArchiveInfo]] = {}
+    for info in archives:
+        if info.asset_path:
+            grouped.setdefault(info.asset_path, []).append(info)
+
+    summaries: dict[str, AssetArchiveSummary] = {}
+    for asset_path, infos in grouped.items():
+        # (date, variant, archive name) -- all three comparable, so min() picks
+        # the earliest with a stable tiebreak and never compares ArchiveInfo.
+        candidates = [
+            (i.first_rstexbin_date, i.levels.get(variant_level, ""), i.first_rstexbin or "")
+            for i in infos
+            if i.first_rstexbin_date is not None
+        ]
+        first = min(candidates) if candidates else None
+        summaries[asset_path] = AssetArchiveSummary(
+            asset_path=asset_path,
+            asset_name=infos[0].levels.get(asset_level, ""),
+            variant_count=len(infos),
+            archive_count=sum(i.archive_count for i in infos),
+            first_rstexbin=first[2] if first else None,
+            first_rstexbin_date=first[0] if first else None,
+            first_rstexbin_variant=first[1] if first else None,
+            rstexbin_count=sum(i.rstexbin_count for i in infos),
+        )
+    return summaries
+
+
+def _asset_path_of(variant_node: Node, levels: tuple[str, ...]) -> str:
+    """Path of the nearest ancestor at the level directly above the variant."""
+    if len(levels) < 2:
+        return ""
+    asset_level = levels[-2]
+    cur: Node | None = variant_node.parent
+    while cur is not None:
+        if cur.type == asset_level:
+            return cur.path
+        cur = cur.parent
+    return ""
 
 
 def _find_child_ci(node: Node, name: str) -> Node | None:
@@ -142,4 +224,5 @@ def _build_archive_info(
         first_rstexbin_date=first.date if first else None,
         first_rstexbin_index=first_index,
         rstexbin_count=sum(1 for a in dated if a.has_marker),
+        asset_path=_asset_path_of(variant_node, config.levels),
     )

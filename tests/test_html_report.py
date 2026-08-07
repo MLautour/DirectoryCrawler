@@ -207,6 +207,32 @@ class TestArchivesSection(unittest.TestCase):
         # High's first (and only) RSTEXBIN is the earliest dated folder, 1st of 4
         self.assertIn("2024-01-15 (1 of 4)", text)
 
+    def test_asset_row_carries_first_rstexbin_badge(self) -> None:
+        html_report.write(self.tree, self.out)
+        text = self.out.read_text(encoding="utf-8")
+        badges = _extract_const(text, "BADGES")
+        self.assertEqual(len(badges), 1, "only Dragon has archives in this fixture")
+        entry = next(iter(badges.values()))
+        self.assertEqual(entry[0], "FIRST RSTEXBIN FROM 2024-01-15")
+        self.assertEqual(entry[2], 1)
+
+    def test_badge_is_attached_to_the_asset_node_not_the_variant(self) -> None:
+        html_report.write(self.tree, self.out)
+        text = self.out.read_text(encoding="utf-8")
+        nodes = _extract_const(text, "NODES")
+        types = _extract_const(text, "META")["types"]
+        idx = int(next(iter(_extract_const(text, "BADGES"))))
+        self.assertEqual(types[nodes[idx][1]], "asset")
+        self.assertEqual(nodes[idx][0], "Dragon")
+
+    def test_no_badge_for_assets_without_archives(self) -> None:
+        html_report.write(self.tree, self.out)
+        text = self.out.read_text(encoding="utf-8")
+        nodes = _extract_const(text, "NODES")
+        badges = _extract_const(text, "BADGES")
+        sword = next(i for i, n in enumerate(nodes) if n[0] == "Sword")
+        self.assertNotIn(str(sword), badges)
+
     def test_archives_section_partial_suffix_when_stopped_early(self) -> None:
         stats = ScanStats(
             root="root", start_time=datetime(2024, 1, 1), end_time=datetime(2024, 1, 1),

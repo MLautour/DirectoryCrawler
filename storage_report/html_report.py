@@ -13,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
-from storage_report.archive import ArchiveInfo, analyze as analyze_archives
+from storage_report.archive import ArchiveInfo, analyze as analyze_archives, summarize_by_asset
 from storage_report.model import Node, RootNode, sort_tree
 from storage_report.utils import format_duration, format_size
 
@@ -48,14 +48,18 @@ def write(
     if archives is None:
         archives = analyze_archives(tree)
 
-    nodes, parents, type_names, largest = _flatten(tree)
     levels = tree.stats.levels if tree.stats is not None else ()
+    badge_text = _asset_badges(archives, levels)
+    asset_level = levels[-2] if len(levels) >= 2 else None
+
+    nodes, parents, type_names, largest, badges = _flatten(tree, badge_text, asset_level)
     meta = {"types": type_names}
 
     page = _render_page(
         nodes=nodes,
         parents=parents,
         meta=meta,
+        badges=badges,
         tree=tree,
         levels=levels,
         largest=largest,
@@ -69,20 +73,30 @@ def write(
     os.replace(tmp_path, output_path)
 
 
-def _flatten(root: RootNode) -> tuple[list[list], list[int], list[str], dict[str, tuple[int, int]]]:
+def _flatten(
+    root: RootNode,
+    badge_text: dict[str, list] | None = None,
+    badge_level: str | None = None,
+) -> tuple[list[list], list[int], list[str], dict[str, tuple[int, int]], dict[int, list]]:
     """Flatten the tree into parent-major, depth-first positional arrays.
 
-    Returns `(nodes, parents, type_names, largest)`:
+    Returns `(nodes, parents, type_names, largest, badges)`:
       - `nodes[i]`   = [name, typeIndex, size, fileCount, [childIndex, ...]]
       - `parents[i]` = index of node i's parent, or -1 for the root
       - `type_names` = distinct `node.type` strings in first-seen order (typeIndex maps into this)
       - `largest`    = {type: (size, index)} the single biggest node seen per type
+      - `badges`     = {nodeIndex: [text, tooltip, hasMarker]} for nodes at `badge_level`
+
+    `badges` is a sparse map rather than a sixth element on every node: only a
+    few thousand asset rows carry one, and an empty slot per node would add
+    megabytes to the payload on a large repository.
     """
     nodes: list[list] = []
     parents: list[int] = []
     type_names: list[str] = []
     type_index: dict[str, int] = {}
     largest: dict[str, tuple[int, int]] = {}
+    badges: dict[int, list] = {}
 
     def type_idx(t: str) -> int:
         idx = type_index.get(t)
@@ -107,11 +121,50 @@ def _flatten(root: RootNode) -> tuple[list[list], list[int], list[str], dict[str
         if current is None or node.size > current[0]:
             largest[str(node.type)] = (node.size, idx)
 
+        # `node.path` is only touched for the handful of nodes at the badge
+        # level, so the per-node path cache stays cold for the rest of the tree.
+        if badge_text and badge_level is not None and str(node.type) == badge_level:
+            entry = badge_text.get(node.path)
+            if entry is not None:
+                badges[idx] = entry
+
         if node.children:
             for child in reversed(node.children):
                 stack.append((child, idx))
 
-    return nodes, parents, type_names, largest
+    return nodes, parents, type_names, largest, badges
+
+
+def _asset_badges(archives: list[ArchiveInfo], levels: tuple[str, ...]) -> dict[str, list]:
+    """Build `{asset_path: [text, tooltip, hasMarker]}` for the asset rows.
+
+    Promotes the first-RSTEXBIN answer to the asset row so it is readable
+    without expanding down to the variant's ARCHIVE folder. Assets with no
+    ARCHIVE anywhere beneath them get no entry at all -- an absent badge means
+    "nothing to say", which is distinct from the "NO RSTEXBIN" badge meaning
+    "archives exist, none of them contain the marker".
+    """
+    summaries = summarize_by_asset(archives, levels)
+    variant_label = levels[-1] if levels else "variant"
+
+    badges: dict[str, list] = {}
+    for asset_path, s in summaries.items():
+        if s.first_rstexbin is not None:
+            text = f"FIRST RSTEXBIN FROM {s.first_rstexbin}"
+            tooltip = (
+                f"{variant_label}: {s.first_rstexbin_variant} · "
+                f"{s.rstexbin_count} of {s.archive_count} archives contain RSTEXBIN "
+                f"across {s.variant_count} {variant_label}(s)"
+            )
+            badges[asset_path] = [text, tooltip, 1]
+        else:
+            text = "NO RSTEXBIN"
+            tooltip = (
+                f"{s.archive_count} dated archive(s) across {s.variant_count} "
+                f"{variant_label}(s), none containing RSTEXBIN"
+            )
+            badges[asset_path] = [text, tooltip, 0]
+    return badges
 
 
 def _safe_json(obj: object) -> str:
@@ -150,6 +203,7 @@ def _render_page(
     nodes: list[list],
     parents: list[int],
     meta: dict,
+    badges: dict[int, list],
     tree: RootNode,
     levels: tuple[str, ...],
     largest: dict[str, tuple[int, int]],
@@ -211,6 +265,7 @@ def _render_page(
         f"const NODES={_safe_json(nodes)};\n"
         f"const PARENT={_safe_json(parents)};\n"
         f"const META={_safe_json(meta)};\n"
+        f"const BADGES={_safe_json({str(k): v for k, v in badges.items()})};\n"
         f"const ARCHIVES={_safe_json(_archives_payload(archives, levels))};\n"
     )
 
@@ -355,6 +410,10 @@ _CSS = """
   --type-root_files: #f59e0b;
   --banner-bg: #fef2f2;
   --banner-fg: #991b1b;
+  --badge-ok-fg: #065f46;
+  --badge-ok-bg: rgba(5,150,105,0.14);
+  --badge-none-fg: #92400e;
+  --badge-none-bg: rgba(245,158,11,0.16);
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -372,6 +431,10 @@ _CSS = """
     --type-root_files: #fbbf24;
     --banner-bg: #3f1414;
     --banner-fg: #fca5a5;
+    --badge-ok-fg: #6ee7b7;
+    --badge-ok-bg: rgba(5,150,105,0.24);
+    --badge-none-fg: #fcd34d;
+    --badge-none-bg: rgba(245,158,11,0.20);
   }
 }
 * { box-sizing: border-box; }
@@ -469,7 +532,21 @@ body {
   font-size: 11px;
 }
 .arrow.leaf { visibility: hidden; }
-.name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.name { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; min-width: 0; }
+.name-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.badge {
+  flex: 0 0 auto;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.6;
+  letter-spacing: 0.02em;
+  padding: 0 7px;
+  border-radius: 999px;
+  white-space: nowrap;
+  cursor: help;
+}
+.badge-ok { color: var(--badge-ok-fg); background: var(--badge-ok-bg); }
+.badge-none { color: var(--badge-none-fg); background: var(--badge-none-bg); }
 .size {
   font-family: var(--mono);
   font-variant-numeric: tabular-nums;
@@ -616,12 +693,19 @@ _JS = """
       var open = expandedEffective(idx);
       var typeName = TYPE_NAMES[typeIdx];
       var arrow = expandable ? (open ? '\\u25be' : '\\u25b8') : '';
+      // Asset rows carry the first-RSTEXBIN answer inline so it is readable
+      // without expanding down to the variant's ARCHIVE folder.
+      var badge = BADGES[idx];
+      var badgeHtml = badge
+        ? '<span class="badge badge-' + (badge[2] ? 'ok' : 'none') + '" title="' + esc(badge[1]) +
+          '">(' + esc(badge[0]) + ')</span>'
+        : '';
       html += '<div class="row" role="treeitem" data-idx="' + idx + '" data-type="' + esc(typeName) + '"' +
         ' style="--depth:' + depth + ';' + heatStyle(size) + '"' +
         ' aria-expanded="' + (expandable ? String(open) : 'false') + '"' +
         ' tabindex="-1">' +
         '<span class="arrow' + (expandable ? '' : ' leaf') + '">' + arrow + '</span>' +
-        '<span class="name">' + esc(name) + '</span>' +
+        '<span class="name"><span class="name-text">' + esc(name) + '</span>' + badgeHtml + '</span>' +
         '<span class="size">' + formatSize(size) + '</span>' +
         '</div>';
     }

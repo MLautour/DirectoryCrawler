@@ -66,6 +66,73 @@ class TestAnalyzeOnFixture(unittest.TestCase):
             archive.analyze(self.tree)
         mocked.assert_not_called()
 
+    def test_asset_path_points_at_the_asset_node(self) -> None:
+        info = self._by_variant("High")
+        self.assertTrue(info.asset_path.endswith("Dragon"))
+        # Must match Node.path exactly -- the renderer keys badge lookup on it.
+        self.assertEqual(info.asset_path, str(self.root / "Characters" / "Dragon"))
+
+
+class TestSummarizeByAsset(unittest.TestCase):
+    """Roll-up across the variants of one asset -- the data behind the asset-row
+    badge in the HTML report.
+    """
+
+    LEVELS = ("type", "asset", "variant")
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        build_archive_example(self.root)
+        # Dragon/Low gains a *later* RSTEXBIN than Dragon/High's 2024-01-15, so
+        # the asset roll-up has to choose across variants rather than take the
+        # first one it encounters.
+        low = self.root / "Characters" / "Dragon" / "Low" / "ARCHIVE"
+        (low / "2026-08-07_10-30-00-noProcess" / "RSTEXBIN").mkdir(parents=True)
+        self.tree = scan(str(self.root), Config())
+        self.archives = archive.analyze(self.tree, Config())
+        self.summaries = archive.summarize_by_asset(self.archives, self.LEVELS)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _dragon(self) -> archive.AssetArchiveSummary:
+        return next(s for s in self.summaries.values() if s.asset_name == "Dragon")
+
+    def test_earliest_rstexbin_wins_across_variants(self) -> None:
+        s = self._dragon()
+        self.assertEqual(s.first_rstexbin, "2024-01-15")
+        self.assertEqual(s.first_rstexbin_date, date(2024, 1, 15))
+        self.assertEqual(s.first_rstexbin_variant, "High")
+
+    def test_counts_aggregate_over_every_variant(self) -> None:
+        s = self._dragon()
+        self.assertEqual(s.variant_count, 2)          # High + Low
+        self.assertEqual(s.archive_count, 5)          # 4 under High, 1 under Low
+        self.assertEqual(s.rstexbin_count, 2)
+
+    def test_keyed_by_asset_path(self) -> None:
+        expected = str(self.root / "Characters" / "Dragon")
+        self.assertIn(expected, self.summaries)
+        self.assertEqual(self.summaries[expected].asset_path, expected)
+
+    def test_asset_whose_archives_have_no_marker_reports_none(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            arc = root / "Props" / "Sword" / "Default" / "ARCHIVE"
+            (arc / "2026-08-07_10-30-00").mkdir(parents=True)
+            (arc / "2026-08-07_11-00-00-noProcess").mkdir(parents=True)
+            summaries = archive.summarize_by_asset(
+                archive.analyze(scan(str(root), Config()), Config()), self.LEVELS
+            )
+            s = next(iter(summaries.values()))
+            self.assertEqual(s.archive_count, 2)
+            self.assertIsNone(s.first_rstexbin)
+            self.assertEqual(s.rstexbin_count, 0)
+
+    def test_hierarchy_without_an_asset_level_yields_no_summaries(self) -> None:
+        self.assertEqual(archive.summarize_by_asset(self.archives, ("variant",)), {})
+
 
 class TestAnalyzeNoArchives(unittest.TestCase):
     def test_no_variants_have_archive_returns_empty_list(self) -> None:
