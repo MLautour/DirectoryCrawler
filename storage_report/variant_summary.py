@@ -489,7 +489,13 @@ body{margin:0;background:var(--bg);color:var(--fg);
 .head{position:sticky;top:53px;z-index:9;background:var(--bg);border-bottom:1px solid var(--border);
  color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.04em}
 .row{border-left:3px solid transparent;cursor:default}
-.row:nth-child(even){background:var(--row-alt)}
+/* The UA rule for [hidden] is display:none, but an author-level display:grid
+   above outranks it -- without this the JS can set .hidden all it likes and
+   every row still renders. */
+.row[hidden]{display:none}
+/* Striping is applied by the script over the *visible* rows; :nth-child would
+   count hidden ones and stripe collapsed sections at random. */
+.row.alt{background:var(--row-alt)}
 .row:hover{background:var(--row-hover)}
 .row-type{border-left-color:var(--type);font-weight:600}
 .row-asset{border-left-color:var(--asset);font-weight:600}
@@ -530,11 +536,20 @@ _JS = """
   function parent(r){ return r.getAttribute('data-parent'); }
   function kind(r){ return r.getAttribute('data-kind'); }
 
+  // key -> row, so walking ancestors is O(depth) rather than a linear scan per
+  // row (which made filtering O(n^2) over a few thousand variants).
+  var byKey = Object.create(null);
+  rows.forEach(function(r, i){
+    r.__id = '#' + i;
+    var k = key(r);
+    if (k) byKey[k] = r;
+  });
+
   function ancestorsOpen(r){
     var p = parent(r);
     while (p) {
       if (closed[p]) return false;
-      var pr = rows.find(function(x){ return key(x) === p; });
+      var pr = byKey[p];
       p = pr ? parent(pr) : '';
     }
     return true;
@@ -547,22 +562,23 @@ _JS = """
     if (q) {
       rows.forEach(function(r){
         if (r.textContent.toLowerCase().indexOf(q) !== -1) {
-          matched[key(r) || ('#' + rows.indexOf(r))] = true;
+          matched[key(r) || r.__id] = true;
           var p = parent(r);
           while (p) {
             matched[p] = true;
-            var pr = rows.find(function(x){ return key(x) === p; });
+            var pr = byKey[p];
             p = pr ? parent(pr) : '';
           }
         }
       });
     }
     rows.forEach(function(r){
-      var visible = q
-        ? !!matched[key(r) || ('#' + rows.indexOf(r))]
-        : ancestorsOpen(r);
+      var visible = q ? !!matched[key(r) || r.__id] : ancestorsOpen(r);
       r.hidden = !visible;
-      if (visible) shown++;
+      if (visible) {
+        r.classList.toggle('alt', shown % 2 === 1);
+        shown++;
+      }
       var k = key(r);
       if (k) r.classList.toggle('closed', !!closed[k]);
     });
