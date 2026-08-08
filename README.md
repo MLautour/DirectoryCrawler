@@ -167,6 +167,41 @@ crawler already enumerated every directory, so `analyze()` is a pure walk over t
 in memory. The HTML report includes a sortable, filterable **Archives** table built from the
 same data.
 
+### Variant summary from existing reports
+
+`summarize_report` mines reports you have **already generated** and merges them into one
+per-variant table. It re-scans nothing, so it puts no load on the storage at all.
+
+```python
+from storage_report import summarize_report
+
+summarize_report(r"C:\reports")                  # every *.html in a folder, merged
+summarize_report(r"C:\reports\*.html")           # or a glob
+summarize_report([r"C:\reports\characters.html", r"C:\reports\props.html"])
+summarize_report(r"C:\reports\characters.html")  # or a single file
+# -> C:\reports\variant_summary.html  (+ variant_summary.csv)
+```
+
+Each report contributes one **type**, named from the last token of its scan root, so a set of
+per-type scans merges into a single `type -> asset -> variant` report. Every variant row carries,
+in order: the first `ARCHIVE` dated folder containing an `RSTEXBIN`, the number of dated archives,
+and the sizes of `TEX`, `Root Files` and the variant's own `RSTEXBIN` — with the **total size
+last**. Asset and type rows roll up to the earliest first-RSTEXBIN across their children.
+
+Only markers inside `ARCHIVE/<dated>/` decide which archive was first; the variant's own
+`RSTEXBIN` folder is reported for its size and never treated as a candidate.
+
+> **Level depth.** These reports were scanned with the root pointing at a *type* directory, so the
+> level names recorded inside them are shifted by one and are ignored — variants are located by
+> depth (2 below each report's root). This is also why the RSTEXBIN badge in the original reports
+> came out empty; see `docs/variant-summary-plan.md` §0. A report scanned from a different depth is
+> detected and refused rather than silently merged with shifted rows; pass `variant_depth=` to
+> override.
+
+The output includes a **Diagnostics** section listing, per source report, how many variants were
+found, how many had an `ARCHIVE`, how many folder names parsed as dates, how many contained the
+marker, and sample names that failed to parse.
+
 ## Development
 
 Run the full test suite (stdlib `unittest`, no pytest dependency — runs inside `hython` too):

@@ -70,7 +70,7 @@ def analyze(tree: RootNode, config: Config = Config()) -> list[ArchiveInfo]:
     archives it has and which is the first one containing the marker folder.
     """
     variant_level = config.levels[-1]
-    date_patterns = [re.compile(p) for p in config.archive_date_patterns]
+    date_patterns = compile_date_patterns(config)
 
     results: list[ArchiveInfo] = []
     stack: list[Node] = [tree]
@@ -163,7 +163,12 @@ def _find_child_ci(node: Node, name: str) -> Node | None:
     return None
 
 
-def _parse_date(name: str, patterns: list[re.Pattern[str]]) -> date | None:
+def compile_date_patterns(config: Config = Config()) -> list[re.Pattern[str]]:
+    """Compile `config.archive_date_patterns` once, for reuse across many names."""
+    return [re.compile(p) for p in config.archive_date_patterns]
+
+
+def parse_archive_date(name: str, patterns: list[re.Pattern[str]]) -> date | None:
     for pattern in patterns:
         match = pattern.match(name)
         if not match:
@@ -206,7 +211,7 @@ def _build_archive_info(
         dated.append(
             DatedArchive(
                 name=child.name,
-                date=_parse_date(child.name, date_patterns),
+                date=parse_archive_date(child.name, date_patterns),
                 size=child.size,
                 has_marker=_has_marker(child, config),
             )
